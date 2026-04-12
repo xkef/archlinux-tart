@@ -58,5 +58,5 @@ TART_HOME="$INSTALL_TART_HOME" tart delete "$INSTALL_VM_NAME" >/dev/null 2>&1 ||
 TART_HOME="$INSTALL_TART_HOME" tart clone "$GHCR_IMAGE" "$INSTALL_VM_NAME"
 
 printf 'Cleaning repo-local build artifacts\n'
-rm -f "$REPO_ROOT/.build/disk.raw" "$REPO_ROOT/.build/disk.raw.xz" "$REPO_ROOT/.build/alarm.tar.gz"
+rm -f "$REPO_ROOT/.build/disk.raw"
 TART_HOME="$TART_HOME" tart delete "$VM_NAME" >/dev/null 2>&1 || true

@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Two-stage build:
+#   1. Inside a Debian builder VM, produce a minimal bootable disk.raw
+#      (scripts/bootstrap-arch-disk.sh).
+#   2. Boot that disk as a Tart VM and let Packer's tart-cli plugin SSH in
+#      and run provisioners (arch.pkr.hcl). Packer handles SSH-wait and
+#      shutdown, replacing the hand-rolled wait_for_ip / diagnostics logic.
+
 VM_NAME="${VM_NAME:-archlinux-tart}"
 BUILDER_VM="${BUILDER_VM:-archlinux-builder}"
 BUILDER_BASE="${BUILDER_BASE:-ghcr.io/cirruslabs/debian:latest}"
@@ -36,68 +43,16 @@ wait_for_exec() {
     fi
     sleep 2
   done
-
   printf 'Builder VM did not become ready for tart exec.\n' >&2
   exit 1
 }
 
-wait_for_ip() {
-  local name="$1"
-  local resolver="${2:-dhcp}"
-  for _ in $(seq 1 60); do
-    if tart ip "$name" --resolver "$resolver" >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 2
-  done
-
-  return 1
-}
-
-wait_for_exec_ready() {
-  local name="$1"
-  for _ in $(seq 1 90); do
-    if tart exec "$name" true >/dev/null 2>&1; then
-      return 0
-    fi
-    sleep 2
-  done
-
-  return 1
-}
-
-print_guest_diagnostics() {
-  local name="$1"
-  tart exec "$name" sh -lc '
-    echo "--- ip -br link ---"
-    ip -br link || true
-    echo
-    echo "--- ip -br addr ---"
-    ip -br addr || true
-    echo
-    echo "--- lsmod ---"
-    lsmod | grep -E "virtio|vmw|e1000|igb|hv" || true
-    echo
-    echo "--- failed units ---"
-    systemctl --no-pager --failed || true
-    echo
-    echo "--- systemd-networkd ---"
-    systemctl status systemd-networkd --no-pager || true
-    echo
-    echo "--- tart-guest-agent ---"
-    systemctl status tart-guest-agent --no-pager || true
-    echo
-    echo "--- networkd journal ---"
-    journalctl -u systemd-networkd -b --no-pager -n 120 || true
-    echo
-    echo "--- guest-agent journal ---"
-    journalctl -u tart-guest-agent -b --no-pager -n 120 || true
-  ' || true
-}
-
 require tart
+require packer
 require git
 mkdir -p "$BUILD_DIR" "$TART_HOME"
+
+# --- Stage 1: build disk.raw inside the Debian builder VM ---
 
 if ! tart list | awk '{print $1}' | grep -qx "$BUILDER_VM"; then
   printf 'Cloning builder VM from %s\n' "$BUILDER_BASE"
@@ -113,17 +68,16 @@ wait_for_exec
 tart exec "$BUILDER_VM" sudo mkdir -p /mnt/workspace /mnt/arch
 tart exec "$BUILDER_VM" sudo bash -lc \
   "mountpoint -q /mnt/workspace || mount -t virtiofs workspace /mnt/workspace"
-tart exec "$BUILDER_VM" sudo bash -lc \
-  "DEBIAN_FRONTEND=noninteractive apt-get update && \
-   DEBIAN_FRONTEND=noninteractive apt-get install -y gdisk dosfstools e2fsprogs libarchive-tools xz-utils curl sudo psmisc"
 tart exec "$BUILDER_VM" sudo env \
   DISK_SIZE="$DISK_SIZE" \
   BUILD_DIR="/mnt/workspace/.build" \
-  /mnt/workspace/scripts/build-arch-image.sh
+  /mnt/workspace/scripts/bootstrap-arch-disk.sh
 
 tart stop "$BUILDER_VM" --timeout 10 >/dev/null 2>&1 || true
 wait "$RUN_PID" 2>/dev/null || true
 RUN_PID=""
+
+# --- Stage 2: create the final VM, customize via Packer ---
 
 if tart list | awk '{print $1}' | grep -qx "$VM_NAME"; then
   tart delete "$VM_NAME"
@@ -134,38 +88,14 @@ tart create "$VM_NAME" --linux --disk-size "$DISK_SIZE"
 tart set "$VM_NAME" --disk "$BUILD_DIR/disk.raw"
 tart set "$VM_NAME" --cpu "$CPU" --memory "$MEMORY"
 
-printf 'Boot-checking final VM %s\n' "$VM_NAME"
-tart stop "$VM_NAME" --timeout 2 >/dev/null 2>&1 || true
-tart run "$VM_NAME" --no-graphics >"$BUILD_DIR/final-run.log" 2>&1 &
-RUN_PID="$!"
-if ! wait_for_exec_ready "$VM_NAME"; then
-  printf 'VM %s did not become reachable via tart exec.\n' "$VM_NAME" >&2
-  tart stop "$VM_NAME" --timeout 10 >/dev/null 2>&1 || true
-  wait "$RUN_PID" 2>/dev/null || true
-  RUN_PID=""
-  if [[ -f "$BUILD_DIR/final-run.log" ]]; then
-    printf '\nRun log tail:\n' >&2
-    tail -n 120 "$BUILD_DIR/final-run.log" >&2 || true
-  fi
-  exit 1
-fi
-
-if ! wait_for_ip "$VM_NAME" agent; then
-  printf 'VM %s did not acquire an IP address via Tart Guest Agent.\n' "$VM_NAME" >&2
-  print_guest_diagnostics "$VM_NAME" >&2
-  tart stop "$VM_NAME" --timeout 10 >/dev/null 2>&1 || true
-  wait "$RUN_PID" 2>/dev/null || true
-  RUN_PID=""
-  exit 1
-fi
-
-if ! wait_for_ip "$VM_NAME" dhcp; then
-  printf 'Warning: VM %s is reachable but host DHCP IP lookup did not resolve. Continuing.\n' "$VM_NAME" >&2
-fi
-
-tart stop "$VM_NAME" --timeout 10 >/dev/null 2>&1 || true
-wait "$RUN_PID" 2>/dev/null || true
-RUN_PID=""
+printf 'Running Packer provisioners on %s\n' "$VM_NAME"
+cd "$WORKSPACE"
+packer init arch.pkr.hcl
+packer build \
+  -var "vm_name=$VM_NAME" \
+  -var "cpu_count=$CPU" \
+  -var "memory_gb=$((MEMORY / 1024))" \
+  arch.pkr.hcl
 
 printf 'Local VM ready: %s\n' "$VM_NAME"
 printf 'Raw disk: %s/disk.raw\n' "$BUILD_DIR"

@@ -8,7 +8,7 @@ GHCR_IMAGE      ?= $(shell ./scripts/default-ghcr-image.sh)
 INSTALL_VM_NAME ?= archlinux-base
 INSTALL_TART_HOME ?= $(HOME)/.tart
 
-SHELLS := build.sh scripts/build-arch-image.sh scripts/push.sh scripts/default-ghcr-image.sh
+SHELLS := build.sh scripts/bootstrap-arch-disk.sh scripts/push.sh scripts/default-ghcr-image.sh
 
 .PHONY: help build push clean fmt lint check
 

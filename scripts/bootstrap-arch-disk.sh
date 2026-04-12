@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Stage 1: build a minimal bootable Arch Linux ARM raw disk image.
+#
+# Only what is required to reach a shell over SSH goes in here:
+# rootfs, bootloader, virtio initramfs, systemd-networkd DHCP, openssh,
+# and a dev user with a known password. Everything else is installed by
+# Packer in stage 2 against a real booted VM.
+
 DISK_SIZE="${DISK_SIZE:-200}"
-VM_USER="${VM_USER:-dev}"
 TARBALL="${TARBALL:-http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz}"
-TART_GUEST_AGENT_VERSION="${TART_GUEST_AGENT_VERSION:-v0.9.0}"
-TART_GUEST_AGENT_URL="${TART_GUEST_AGENT_URL:-https://github.com/cirruslabs/tart-guest-agent/releases/download/${TART_GUEST_AGENT_VERSION}/tart-guest-agent-linux-arm64.tar.gz}"
 BUILD_DIR="${BUILD_DIR:-/mnt/workspace/.build}"
 MNT="${MNT:-/mnt/arch}"
+VM_USER="${VM_USER:-dev}"
+VM_PASSWORD="${VM_PASSWORD:-dev}"
 
 cleanup() {
   umount "$MNT"/{sys,proc,dev,boot} 2>/dev/null || true
@@ -18,8 +24,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$BUILD_DIR"
-rm -f "$BUILD_DIR/disk.raw" "$BUILD_DIR/disk.raw.xz"
+DEBIAN_FRONTEND=noninteractive apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+  gdisk dosfstools e2fsprogs libarchive-tools xz-utils curl sudo psmisc
+
+mkdir -p "$BUILD_DIR" "$MNT"
+rm -f "$BUILD_DIR/disk.raw"
 
 printf 'Creating %sG disk image\n' "$DISK_SIZE"
 truncate -s "${DISK_SIZE}G" "$BUILD_DIR/disk.raw"
@@ -30,7 +40,6 @@ LOOP="$(losetup --find --show --partscan "$BUILD_DIR/disk.raw")"
 mkfs.vfat -F32 "${LOOP}p1" >/dev/null
 mkfs.ext4 -qL root "${LOOP}p2" >/dev/null
 
-mkdir -p "$MNT"
 mount "${LOOP}p2" "$MNT"
 mkdir -p "$MNT/boot"
 mount "${LOOP}p1" "$MNT/boot"
@@ -40,27 +49,6 @@ if [[ ! -f "$BUILD_DIR/alarm.tar.gz" ]]; then
   curl -fSL "$TARBALL" -o "$BUILD_DIR/alarm.tar.gz"
 fi
 bsdtar -xpf "$BUILD_DIR/alarm.tar.gz" -C "$MNT"
-
-printf 'Installing Tart Guest Agent %s\n' "$TART_GUEST_AGENT_VERSION"
-mkdir -p "$BUILD_DIR/tart-guest-agent" "$MNT/usr/local/bin" "$MNT/etc/systemd/system"
-curl -fSL "$TART_GUEST_AGENT_URL" -o "$BUILD_DIR/tart-guest-agent-linux-arm64.tar.gz"
-tar -xzf "$BUILD_DIR/tart-guest-agent-linux-arm64.tar.gz" -C "$BUILD_DIR/tart-guest-agent"
-install -m 0755 "$BUILD_DIR/tart-guest-agent/tart-guest-agent" "$MNT/usr/local/bin/tart-guest-agent"
-cat >"$MNT/etc/systemd/system/tart-guest-agent.service" <<'EOF'
-[Unit]
-Description=Guest agent for Tart VMs
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/tart-guest-agent --run-rpc
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
 
 mkdir -p "$MNT/boot/loader/entries"
 printf 'default arch.conf\ntimeout 0\n' >"$MNT/boot/loader/loader.conf"
@@ -74,6 +62,7 @@ printf '[Match]\nName=en*\n\n[Network]\nDHCP=yes\n' \
   >"$MNT/etc/systemd/network/20-ethernet.network"
 printf '[Match]\nName=eth*\n\n[Network]\nDHCP=yes\n' \
   >"$MNT/etc/systemd/network/21-ethernet-legacy.network"
+
 mkdir -p "$MNT/etc/modules-load.d"
 cat >"$MNT/etc/modules-load.d/virtio.conf" <<'EOF'
 virtio_pci
@@ -88,26 +77,6 @@ mkdir -p "$MNT/etc/ssh/sshd_config.d"
 printf 'AcceptEnv ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN\nStreamLocalBindUnlink yes\n' \
   >"$MNT/etc/ssh/sshd_config.d/dev.conf"
 
-printf 'arch\n' >"$MNT/etc/hostname"
-
-sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' "$MNT/etc/locale.gen"
-printf 'LANG=en_US.UTF-8\n' >"$MNT/etc/locale.conf"
-
-cat >"$MNT/etc/systemd/system/home-dev-code.mount" <<'EOF'
-[Unit]
-Description=VirtioFS shared code directory
-
-[Mount]
-What=code
-Where=/home/dev/code
-Type=virtiofs
-Options=nofail
-TimeoutSec=5
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
 mount --bind /dev "$MNT/dev"
 mount --bind /proc "$MNT/proc"
 mount --bind /sys "$MNT/sys"
@@ -117,39 +86,25 @@ printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\n' >"$MNT/etc/resolv.conf"
 sed -i 's/^hosts:.*/hosts: files dns/' "$MNT/etc/nsswitch.conf"
 touch "$MNT/etc/vconsole.conf"
 
-chroot "$MNT" /bin/bash <<'CHROOT'
+chroot "$MNT" env VM_USER="$VM_USER" VM_PASSWORD="$VM_PASSWORD" /bin/bash <<'CHROOT'
 set -euo pipefail
 useradd -r -d / -s /usr/bin/nologin alpm 2>/dev/null || true
 pacman-key --init
 pacman-key --populate archlinuxarm
 pacman -Syu --noconfirm || true
-locale-gen
-ldconfig
-pacman -S --needed --noconfirm openssh git rsync stow base-devel rust sudo mkinitcpio fish
+pacman -S --needed --noconfirm openssh sudo mkinitcpio
 
-# Install an actual EFI bootloader into the image's ESP.
 bootctl install --esp-path=/boot --no-variables
 
-# Ensure Tart's virtio devices are available during early boot.
 sed -i 's/^MODULES=.*/MODULES=(virtio_pci virtio_net virtio_blk virtio_mmio virtio_ring)/' /etc/mkinitcpio.conf
 mkinitcpio -P
 
 systemctl enable sshd systemd-networkd systemd-resolved
-systemctl enable tart-guest-agent.service home-dev-code.mount
 
-useradd -m -G wheel -s /usr/bin/fish dev
+groupadd -f wheel
+useradd -m -G wheel -s /bin/bash "$VM_USER"
+printf '%s:%s\n' "$VM_USER" "$VM_PASSWORD" | chpasswd
 echo '%wheel ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/wheel
-userdel -r alarm 2>/dev/null || true
-install -d -m 755 -o dev -g dev /home/dev/code
-
-su - dev -c '
-  git clone https://aur.archlinux.org/paru.git /tmp/paru
-  cd /tmp/paru && makepkg -si --noconfirm
-  rm -rf /tmp/paru
-'
-paru --version
-
-rm -rf /var/cache/pacman/pkg/*
 CHROOT
 
 fuser -km "$MNT" 2>/dev/null || true

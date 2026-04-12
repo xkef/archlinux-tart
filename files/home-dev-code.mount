@@ -1,0 +1,12 @@
+[Unit]
+Description=VirtioFS shared code directory
+
+[Mount]
+What=code
+Where=/home/dev/code
+Type=virtiofs
+Options=nofail
+TimeoutSec=5
+
+[Install]
+WantedBy=multi-user.target

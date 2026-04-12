@@ -1,0 +1,13 @@
+[Unit]
+Description=Guest agent for Tart VMs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/tart-guest-agent --run-rpc
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

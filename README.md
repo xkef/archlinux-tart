@@ -46,8 +46,12 @@ out after 5 seconds and boot continues normally.
 
 ## Build
 
-Requires `tart` and `git`. The build boots a disposable Debian builder VM,
-mounts this repo via virtiofs, and produces a raw disk image inside it.
+Requires `tart`, `packer`, and `git`. The build runs in two stages:
+
+1. A Debian builder VM produces a minimal bootable `disk.raw` (rootfs,
+   boot, SSH, `dev` user)
+2. Packer boots that disk as a Tart VM and provisions packages, tools,
+   and configuration over SSH
 
 ```bash
 make build
