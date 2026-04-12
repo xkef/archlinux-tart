@@ -31,6 +31,11 @@ variable "ssh_password" {
   default = "dev"
 }
 
+variable "tart_guest_agent_version" {
+  type    = string
+  default = "v0.9.0"
+}
+
 source "tart-cli" "arch" {
   vm_name      = var.vm_name
   cpu_count    = var.cpu_count
@@ -51,6 +56,29 @@ build {
   provisioner "shell" {
     inline = [
       "sudo pacman -Sy --needed --noconfirm git rsync stow base-devel rust cloud-init"
+    ]
+  }
+
+  # Tart Guest Agent: lets the host resolve the VM's IP via `tart ip
+  # --resolver agent`. Not required for Packer itself (it connects over
+  # the DHCP-assigned IP), so it lives here rather than in bootstrap.
+  provisioner "file" {
+    source      = "files/tart-guest-agent.service"
+    destination = "/tmp/tart-guest-agent.service"
+  }
+
+  provisioner "shell" {
+    environment_vars = [
+      "TART_GUEST_AGENT_VERSION=${var.tart_guest_agent_version}",
+    ]
+    inline = [
+      "curl -fsSL \"https://github.com/cirruslabs/tart-guest-agent/releases/download/$TART_GUEST_AGENT_VERSION/tart-guest-agent-linux-arm64.tar.gz\" -o /tmp/tart-guest-agent.tar.gz",
+      "tar -xzf /tmp/tart-guest-agent.tar.gz -C /tmp",
+      "sudo install -m 0755 /tmp/tart-guest-agent /usr/local/bin/tart-guest-agent",
+      "sudo install -m 0644 /tmp/tart-guest-agent.service /etc/systemd/system/tart-guest-agent.service",
+      "sudo systemctl daemon-reload",
+      "sudo systemctl enable tart-guest-agent.service",
+      "rm -f /tmp/tart-guest-agent /tmp/tart-guest-agent.tar.gz /tmp/tart-guest-agent.service",
     ]
   }
 

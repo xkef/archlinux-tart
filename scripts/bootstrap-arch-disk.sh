@@ -11,8 +11,6 @@ set -euo pipefail
 
 DISK_SIZE="${DISK_SIZE:-50}"
 TARBALL="${TARBALL:-http://os.archlinuxarm.org/os/ArchLinuxARM-aarch64-latest.tar.gz}"
-TART_GUEST_AGENT_VERSION="${TART_GUEST_AGENT_VERSION:-v0.9.0}"
-TART_GUEST_AGENT_URL="${TART_GUEST_AGENT_URL:-https://github.com/cirruslabs/tart-guest-agent/releases/download/${TART_GUEST_AGENT_VERSION}/tart-guest-agent-linux-arm64.tar.gz}"
 BUILD_DIR="${BUILD_DIR:-/mnt/workspace/.build}"
 MNT="${MNT:-/mnt/arch}"
 VM_USER="${VM_USER:-dev}"
@@ -50,27 +48,6 @@ mount "${LOOP}p1" "$MNT/boot"
 printf 'Downloading Arch Linux ARM rootfs\n'
 curl -fSL "$TARBALL" -o "$BUILD_DIR/alarm.tar.gz"
 bsdtar -xpf "$BUILD_DIR/alarm.tar.gz" -C "$MNT"
-
-printf 'Installing Tart Guest Agent %s\n' "$TART_GUEST_AGENT_VERSION"
-mkdir -p "$BUILD_DIR/tart-guest-agent" "$MNT/usr/local/bin" "$MNT/etc/systemd/system"
-curl -fSL "$TART_GUEST_AGENT_URL" -o "$BUILD_DIR/tart-guest-agent-linux-arm64.tar.gz"
-tar -xzf "$BUILD_DIR/tart-guest-agent-linux-arm64.tar.gz" -C "$BUILD_DIR/tart-guest-agent"
-install -m 0755 "$BUILD_DIR/tart-guest-agent/tart-guest-agent" "$MNT/usr/local/bin/tart-guest-agent"
-cat > "$MNT/etc/systemd/system/tart-guest-agent.service" <<'EOF'
-[Unit]
-Description=Guest agent for Tart VMs
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/tart-guest-agent --run-rpc
-Restart=always
-RestartSec=2
-
-[Install]
-WantedBy=multi-user.target
-EOF
 
 mkdir -p "$MNT/boot/loader/entries"
 printf 'default arch.conf\ntimeout 0\n' > "$MNT/boot/loader/loader.conf"
@@ -125,7 +102,6 @@ sed -i 's/^MODULES=.*/MODULES=(virtio_pci virtio_net virtio_blk virtio_mmio virt
 mkinitcpio -P
 
 systemctl enable sshd systemd-networkd systemd-resolved
-systemctl enable tart-guest-agent.service
 
 useradd -m -G wheel -s /bin/bash "$VM_USER"
 printf '%s:%s\n' "$VM_USER" "$VM_PASSWORD" | chpasswd

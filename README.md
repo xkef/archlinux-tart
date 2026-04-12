@@ -97,13 +97,14 @@ make push INSTALL_VM_NAME=archlinux-base INSTALL_TART_HOME=$HOME/.tart
 
 - clones or reuses the Linux builder VM
 - mounts this repo into the builder VM with `virtiofs`
-- produces a minimal bootable `disk.raw` — just rootfs, systemd-boot, virtio initramfs, `systemd-networkd` DHCP, `openssh`, a `dev` user with a known password, and `tart-guest-agent`
+- produces a minimal bootable `disk.raw` — just what's needed to reach SSH: rootfs, systemd-boot, virtio initramfs, `systemd-networkd` DHCP, `openssh`, and a `dev` user with a known password
 
 **Stage 2 — customize** (`arch.pkr.hcl`, driven by Packer against the booted VM)
 
 - recreates the target Tart VM from the bootstrap disk
 - boots it and SSHes in as `dev` / `dev`
 - `pacman -S git rsync stow base-devel rust cloud-init`
+- installs and enables `tart-guest-agent` (binary + systemd unit from `files/tart-guest-agent.service`)
 - builds `paru-bin` from the AUR as the `dev` user
 - Packer's successful SSH connect is the boot-check — no hand-rolled `wait_for_ip` / diagnostics required
 
