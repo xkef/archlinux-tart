@@ -1,0 +1,4 @@
+[tools]
+shfmt = "3"
+shellcheck = "0"
+markdownlint-cli2 = "0"
