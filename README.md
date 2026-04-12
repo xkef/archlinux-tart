@@ -22,6 +22,7 @@ Build and publish happen from your machine.
 
 - Apple Silicon Mac
 - `tart`
+- `packer` (with the `cirruslabs/tart` plugin; `packer init` will fetch it)
 - `gh`
 - network access to:
   - `os.archlinuxarm.org`
@@ -90,13 +91,23 @@ make push INSTALL_VM_NAME=archlinux-base INSTALL_TART_HOME=$HOME/.tart
 
 ## Workflow
 
-`make build`
+`make build` runs in two stages:
+
+**Stage 1 — bootstrap** (`scripts/bootstrap-arch-disk.sh`, inside the Debian builder VM)
 
 - clones or reuses the Linux builder VM
 - mounts this repo into the builder VM with `virtiofs`
-- builds the Arch raw disk inside the builder VM as root
-- recreates the target Tart VM from that disk
-- validates the image can boot and answer via Tart Guest Agent before it is considered ready
+- produces a minimal bootable `disk.raw` — just rootfs, systemd-boot, virtio initramfs, `systemd-networkd` DHCP, `openssh`, a `dev` user with a known password, and `tart-guest-agent`
+
+**Stage 2 — customize** (`arch.pkr.hcl`, driven by Packer against the booted VM)
+
+- recreates the target Tart VM from the bootstrap disk
+- boots it and SSHes in as `dev` / `dev`
+- `pacman -S git rsync stow base-devel rust cloud-init`
+- builds `paru-bin` from the AUR as the `dev` user
+- Packer's successful SSH connect is the boot-check — no hand-rolled `wait_for_ip` / diagnostics required
+
+The split means a failing provisioner does not invalidate the bootstrap disk, so you can iterate on stage 2 without rebuilding the base.
 
 `make push`
 

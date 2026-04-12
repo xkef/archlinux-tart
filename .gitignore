@@ -1,3 +1,7 @@
 .build/
 .tart/
 .DS_Store
+.packer.d/
+packer_cache/
+crash.log
+*.pkr.hcl.backup
